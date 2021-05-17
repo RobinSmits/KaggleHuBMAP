@@ -145,7 +145,7 @@ def write_tfrecord_tiles_v2(external_images: list, data_dir: str, tfrecords_data
 
         # Get Mask Patch
         mask_patch = tf.io.decode_png(tf.io.read_file(f'{data_dir}masks_1024/{ext_image}'))
-        mask_patch = (mask_patch.numpy() > 0).astype(int)
+        mask_patch = (mask_patch.numpy() > 0).astype(np.uint8)
         mask_patch = np.squeeze(mask_patch)
         
         # Get Image Id and filenames
