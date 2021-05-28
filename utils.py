@@ -1,11 +1,15 @@
 # Import Modules
 import cv2
 import os
+import random
 import shutil
 import tifffile
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+
 from typing import Tuple
 from tqdm import tqdm
 
@@ -72,7 +76,7 @@ def get_saturation_mean(image_patch: np.array)->float:
     
 def bytes_feature(value: bytes)->tf.train.Feature:
     if isinstance(value, type(tf.constant(0))):
-        value = value.numpy() # BytesList won't unpack a string from an EagerTensor.
+        value = value.numpy()
     return tf.train.Feature(bytes_list = tf.train.BytesList(value = [value]))
 
 def int64_feature(value: int)->tf.train.Feature:
@@ -167,3 +171,194 @@ def write_tfrecord_tiles_v2(external_images: list, data_dir: str, tfrecords_data
                                         'mask_density': mask_density}, ignore_index = True)
 
     return patches_df
+
+################# TRAINING UTILS #################################################################################################
+
+def set_seeds(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+def initialize_fold_history(metric_keys: list)->dict:
+    history = {}
+    for metric in metric_keys: history[metric] = []
+    for metric in metric_keys: history[f'val_{metric}'] = []
+
+    return history
+
+def parse_image(tf_example, size, resize, seed, augment = True):
+    feature_description = {'height': tf.io.FixedLenFeature([], tf.int64),
+                            'width': tf.io.FixedLenFeature([], tf.int64),
+                            'channels': tf.io.FixedLenFeature([], tf.int64),
+                            'image_bytes': tf.io.FixedLenFeature([], tf.string),
+                            'mask_bytes': tf.io.FixedLenFeature([], tf.string)}
+    
+    single_example = tf.io.parse_single_example(tf_example, feature_description)
+    
+    image_bytes =  tf.io.decode_raw(single_example['image_bytes'], out_type = 'uint8')   
+    image = tf.reshape(image_bytes, (size, size, 3))   
+    mask_bytes =  tf.io.decode_raw(single_example['mask_bytes'], out_type = 'bool')    
+    mask = tf.reshape(mask_bytes, (size, size, 1))
+    
+    # Normalize
+    image = tf.cast(image, tf.float32)
+    image = image / 255.0
+    
+    # Resize
+    image = tf.image.resize(image, [resize, resize])
+    mask = tf.cast(mask, tf.float32)
+    mask = tf.image.resize(mask, [resize, resize])
+    
+    if augment:            
+        # Horizontal Flip
+        flip_lr_number = random.uniform(0, 1)
+        if flip_lr_number < 0.50:
+            image = tf.image.flip_left_right(image)
+            mask = tf.image.flip_left_right(mask)
+
+        # Vertical Flip
+        flip_ud_number = random.uniform(0, 1)
+        if flip_ud_number < 0.50:
+            image = tf.image.flip_up_down(image)
+            mask = tf.image.flip_up_down(mask)
+        
+        # Get Random Number
+        number = random.uniform(0, 1) 
+        
+        # Rotate 90 degrees
+        if 0.00 <= number < 0.17:
+            image = tf.image.rot90(image, k = 1)
+            mask = tf.image.rot90(mask, k = 1)
+
+        # Rotate 180 degrees
+        if 0.17 <= number < 0.34:
+            image = tf.image.rot90(image, k = 2)
+            mask = tf.image.rot90(mask, k = 2)
+
+        # Rotate 270 degrees
+        if 0.34 <= number < 0.50:
+            image = tf.image.rot90(image, k = 3)
+            mask = tf.image.rot90(mask, k = 3)
+
+        # OneOf
+        one_of_number = random.uniform(0, 1)
+        if 0.0 <= one_of_number < 0.50:    
+            # Other Augmentations...perform always but with small intervals
+            image = tf.image.random_saturation(image, 0.94, 1.06, seed = seed)
+            #image = tf.image.random_brightness(image, 0.05, seed = seed)
+            image = tf.image.random_contrast(image, 0.94, 1.06, seed = seed)
+            image = tf.image.random_hue(image, 0.075, seed = seed)
+        else:
+            one_of_one_number = random.uniform(0, 1)
+            if 0.0 <= one_of_one_number < 1/4.:
+                image = tf.image.random_saturation(image, 0.94, 1.06, seed = seed)
+            if 1/4. <= one_of_one_number < 2/4.:
+                image = tf.image.random_brightness(image, 0.05, seed = seed)
+            if 2/4. <= one_of_one_number < 3/4.:
+                image = tf.image.random_contrast(image, 0.94, 1.06, seed = seed)
+            if 3/4. <= one_of_one_number <= 4/4.:
+                image = tf.image.random_hue(image, 0.075, seed = seed)
+                
+    return tf.cast(image, tf.float32), tf.cast(mask, tf.float32)
+
+def load_dataset(filenames, size, resize, seed, ordered = False, augment = False):
+    ignore_order = tf.data.Options() 
+    ignore_order.experimental_deterministic = ordered
+    
+    dataset = tf.data.TFRecordDataset(filenames, 
+                                      num_parallel_reads = tf.data.experimental.AUTOTUNE, 
+                                      compression_type = "GZIP")
+    dataset = dataset.with_options(ignore_order)
+    dataset = dataset.map(lambda tf_example: parse_image(tf_example, size, resize, seed, augment = augment), num_parallel_calls = tf.data.experimental.AUTOTUNE)
+    
+    return dataset
+
+def get_training_dataset(training_filenames, batch_size, size, resize, seed, ordered = False, augment = False):
+    dataset = load_dataset(training_filenames, size, resize, seed, ordered = ordered, augment = augment)
+    dataset = dataset.repeat()
+    dataset = dataset.shuffle(1024, seed = seed, reshuffle_each_iteration = True)
+    dataset = dataset.batch(batch_size, drop_remainder = True)
+    dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+    
+    return dataset
+
+def get_validation_dataset(validation_filenames, batch_size, size, resize, seed, ordered = True, augment = False):
+    dataset = load_dataset(validation_filenames, size, resize, seed, ordered = ordered, augment = augment)
+    dataset = dataset.batch(batch_size, drop_remainder = True)
+    dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+    
+    return dataset
+
+def lr_scheduler(epoch: int, LR: float)->float:
+    # Set Custom LR Schedule
+    if epoch == 0:
+        lr = 0.15 * LR
+    if epoch == 1:
+        lr = 0.30 * LR
+    if epoch == 2:
+        lr = 0.45 * LR
+    if epoch == 3:
+        lr = 0.60 * LR
+    if epoch == 4:
+        lr = 0.75 * LR
+    if epoch == 5:
+        lr = 0.90 * LR
+    if epoch > 5:
+        lr = LR   
+    if epoch >= 25:
+        lr = 0.8 * LR
+    if epoch >= 35:
+        lr = 0.60 * LR
+        
+    return lr
+
+def dice(output, target, axis = None, smooth = 1e-10):
+    output = tf.dtypes.cast( tf.math.greater(output, 0.5), tf.float32)
+    target = tf.dtypes.cast( tf.math.greater(target, 0.5), tf.float32)
+    
+    inse = tf.reduce_sum(output * target, axis = axis)
+    
+    l = tf.reduce_sum(output, axis = axis)
+    r = tf.reduce_sum(target, axis = axis)
+
+    dice = (2. * inse + smooth) / (l + r + smooth)
+    dice = tf.reduce_mean(dice, name = 'dice')
+    
+    return dice
+
+def random_sampler(item_list, sample_percentage, debug = False):
+    item_list_length = len(item_list)
+    k_samples = int(item_list_length * sample_percentage)
+    sampled_list = random.sample(item_list, k_samples)
+
+    # Shuffle Sample Selection
+    random.shuffle(sampled_list)
+
+    # Summary
+    if debug:
+        print(f'Random Sampler Input List length: {item_list_length}   Percentage: {sample_percentage}   Sampled Items: {len(sampled_list)}')
+    
+    return sampled_list
+
+def plot_training(history, plot_file_name):
+    plt.figure(figsize = (16, 6))
+    n_e = np.arange(len(history['dice']))
+
+    plt.plot(n_e, history['dice'], '-o', label = 'Train dice', color = '#ff7f0e')
+    plt.plot(n_e, history['val_dice'], '-o', label = 'Val dice', color = '#1f77b4')
+    x = np.argmax(history['val_dice']); y = np.max(history['val_dice'])
+    xdist = plt.xlim()[1] - plt.xlim()[0]; ydist = plt.ylim()[1] - plt.ylim()[0]
+    plt.scatter(x,y,s=200,color='#1f77b4'); plt.text(x-0.03*xdist, y-0.13*ydist, 'max dice\n%.4f'%y, size = 12)
+    plt.ylabel('dice',size=14); plt.xlabel('Epoch', size=14)
+    plt.legend(loc=2)
+    plt2 = plt.gca().twinx()
+
+    plt2.plot(n_e, history['loss'], '-o', label = 'Train Loss', color = '#2ca02c')
+    plt2.plot(n_e, history['val_loss'], '-o', label = 'Val Loss', color = '#d62728')
+    x = np.argmin(history['val_loss']); y = np.min(history['val_loss'])
+    ydist = plt.ylim()[1] - plt.ylim()[0]
+
+    plt.scatter(x,y,s=200,color='#d62728'); plt.text(x-0.03*xdist,y+0.05*ydist,'min loss', size = 12)
+    plt.ylabel('Loss', size = 14)
+    plt.legend(loc = 3)
+    plt.savefig(plot_file_name)
