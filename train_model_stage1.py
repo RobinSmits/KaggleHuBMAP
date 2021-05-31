@@ -28,7 +28,8 @@ except ValueError:
 
 # Set Constants
 EPOCHS = 40
-BACKBONE = 'efficientnetb0' #b4 
+BACKBONE = 'efficientnetb0' # B4 
+SEGMENTATION_FRAMEWORK = 'unet' # Choice: 'fpn' OR 'linknet' OR 'unet'
 FOLDS = 5
 SIZE = 1024
 RESIZE = 256 
@@ -61,7 +62,7 @@ set_seeds(SEED)
 #DATA_PATH = KaggleDatasets().get_gcs_path(f'khmtrainphase1')
 DATA_PATH = 'C:/KaggleHuBMAP/tfrecords'
 MODEL_PATH = '/kaggle/working/'
-MODEL_NAME = 'unet_b0_1024-'
+MODEL_NAME = f'{SEGMENTATION_FRAMEWORK}_{BACKBONE}_{SIZE}_{RESIZE}'
 
 # Get all Kaggle official training files
 ALL_TRAINING_FILENAMES = tf.io.gfile.glob(DATA_PATH + '/train/*/*.tfrec')
@@ -141,23 +142,14 @@ for fold, (tr_idx, val_idx) in enumerate(fold.split(df, df.bin_label.values)):
     
     # Create Model
     with strategy.scope():   
-        model = sm.Unet(BACKBONE, 
-                        encoder_weights = 'imagenet', 
-                        activation = 'sigmoid', 
-                        encoder_freeze = False, 
-                        classes = 1)
-        
-        # Compile Model
-        model.compile(optimizer = tf.keras.optimizers.Adam(),
-                      loss = (0.50 * sm.losses.BinaryCELoss()) + (0.25 * sm.losses.DiceLoss()) + (0.25 * sm.losses.BinaryFocalLoss()),
-                      metrics = [dice, 'accuracy'])
+        model = create_model(BACKBONE, SEGMENTATION_FRAMEWORK)
 
     ########### CUSTOM LOOP WITH SAMPLING FOR EACH EPOCH #####################################################################
     fold_history = initialize_fold_history(METRIC_KEYS)
     val_dice = 0.0
 
     for epoch in range(EPOCHS): 
-        print(f'\n======= Training Model Fold {fold+1} - Epoch: {epoch}')  
+        print(f'\n======= Training Model Fold {fold} - Epoch: {epoch}')  
          
         # Get Ramdom Samples
         EXTMask = random_sampler(ALL_TRAINING_FILENAMES_EXT1_MASK, 0.60)
@@ -182,7 +174,7 @@ for fold, (tr_idx, val_idx) in enumerate(fold.split(df, df.bin_label.values)):
         # Fit Model
         print(f'Train Steps: {STEPS_PER_EPOCH}')
         print(f'Validation Steps: {VALIDATION_STEPS_PER_EPOCH}')
-        print(f'Setting Learning rate: {model.optimizer.learning_rate.numpy()}')
+        print(f'Setting Learning rate: {model.optimizer.learning_rate.numpy():.6f}')
         history = model.fit(training_dataset,
                             epochs = 1,
                             steps_per_epoch = STEPS_PER_EPOCH,
@@ -197,16 +189,16 @@ for fold, (tr_idx, val_idx) in enumerate(fold.split(df, df.bin_label.values)):
         # Custom Model Checkpointing
         current_val_dice = history.history['val_dice'][0]
         if current_val_dice > val_dice:
-            print(f'Val Dice improved from {val_dice} to {current_val_dice} ... Saving Model to: {MODEL_PATH}{MODEL_NAME}{RESIZE}-{fold}.h5')
-            model.save(f'{MODEL_PATH}{MODEL_NAME}{RESIZE}-{fold}.h5')
+            print(f'Val Dice improved from {val_dice} to {current_val_dice} ... Saving Model to: {MODEL_PATH}{MODEL_NAME}_{fold}.h5')
+            model.save(f'{MODEL_PATH}{MODEL_NAME}_{fold}.h5')
             # Update Val Dice
             val_dice = current_val_dice
         else:
             print(f'Val Dice did not improve from {val_dice} to {current_val_dice} ... ')
     
     # Evaluate Model
-    print(f'\nEvaluate Model Fold {fold+1}...')
-    model.load_weights(f'{MODEL_PATH}{MODEL_NAME}{RESIZE}-{fold}.h5')
+    print(f'\nEvaluate Model Fold {fold}...')
+    model.load_weights(f'{MODEL_PATH}{MODEL_NAME}_{fold}.h5')
     eval = model.evaluate(validation_dataset, steps = VALIDATION_STEPS_PER_EPOCH, return_dict = True)
     for metric in METRIC_KEYS: M[f'val_{metric}'].append(eval[metric])
     
@@ -215,10 +207,10 @@ for fold, (tr_idx, val_idx) in enumerate(fold.split(df, df.bin_label.values)):
     gc.collect()
     
     # Plot Training and Validation Results for Fold
-    plot_training(fold_history, f'{MODEL_PATH}plot_fold{fold+1}.png')
+    plot_training(fold_history, f'{MODEL_PATH}plot_{MODEL_NAME}_{fold}.png')
 
 # Write Final Metrics to file
-M['datetime'] = str(datetime.now())
+M['datetime'] = f'{datetime.now()}'
 for metric in METRIC_KEYS:
     M['oof_' + metric] = np.mean(M[f'val_{metric}'])
     print(f'OOF {metric}: {M[f"oof_{metric}"]}')

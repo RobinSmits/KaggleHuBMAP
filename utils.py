@@ -8,6 +8,7 @@ import tifffile
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import segmentation_models as sm
 import tensorflow as tf
 
 from typing import Tuple
@@ -362,3 +363,32 @@ def plot_training(history, plot_file_name):
     plt.ylabel('Loss', size = 14)
     plt.legend(loc = 3)
     plt.savefig(plot_file_name)
+
+def create_model(backbone: str, segmentation_framework: str)->tf.keras.Model:
+    if segmentation_framework == 'fpn':
+        model = sm.FPN(backbone, 
+                        encoder_weights = 'imagenet', 
+                        activation = 'sigmoid', 
+                        encoder_freeze = False, 
+                        classes = 1)
+
+    if segmentation_framework == 'linknet':
+        model = sm.Linknet(backbone, 
+                           encoder_weights = 'imagenet', 
+                           activation = 'sigmoid', 
+                           encoder_freeze = False, 
+                           classes = 1)
+
+    if segmentation_framework == 'unet':
+        model = sm.Unet(backbone, 
+                        encoder_weights = 'imagenet', 
+                        activation = 'sigmoid', 
+                        encoder_freeze = False, 
+                        classes = 1)
+
+    # Compile Model
+    model.compile(optimizer = tf.keras.optimizers.Adam(),
+                    loss = (0.50 * sm.losses.BinaryCELoss()) + (0.25 * sm.losses.DiceLoss()) + (0.25 * sm.losses.BinaryFocalLoss()),
+                    metrics = [dice, 'accuracy'])
+    
+    return model
