@@ -1,5 +1,8 @@
+### Note. Certain functions were re-used / modified from Public Kaggle Kernels ###
+
 # Import Modules
 import cv2
+import gc
 import os
 import random
 import shutil
@@ -13,6 +16,10 @@ import tensorflow as tf
 
 from typing import Tuple
 from tqdm import tqdm
+
+# DenseCRF
+import pydensecrf.densecrf as dcrf
+from pydensecrf.utils import create_pairwise_bilateral, unary_from_softmax
 
 def clean_and_prepare_dir(dir: str):
     # Remove existing stuff..
@@ -392,3 +399,166 @@ def create_model(backbone: str, segmentation_framework: str)->tf.keras.Model:
                     metrics = [dice, 'accuracy'])
     
     return model
+
+################# INFERENCE UTILS #################################################################################################
+
+def rle_encode_less_memory(img: np.ndarray)->str:
+    pixels = img.T.flatten()
+    pixels[0] = 0
+    pixels[-1] = 0
+    runs = np.where(pixels[1:] != pixels[:-1])[0] + 2
+    runs[1::2] -= runs[::2]
+    
+    return ' '.join(str(x) for x in runs)
+
+def make_grid(shape: tuple, window: int, min_overlap: int)->np.ndarray:
+    x, y = shape
+    
+    nx = x // (window - min_overlap) + 1
+    x1 = np.linspace(0, x, num = nx, endpoint = False, dtype = np.int64)
+    x1[-1] = x - window
+    x2 = (x1 + window).clip(0, x)
+    
+    ny = y // (window - min_overlap) + 1
+    y1 = np.linspace(0, y, num = ny, endpoint = False, dtype = np.int64)
+    y1[-1] = y - window
+    y2 = (y1 + window).clip(0, y)
+    
+    slices = np.zeros((nx,ny, 4), dtype = np.int64)
+    
+    for i in range(nx):
+        for j in range(ny):
+            slices[i,j] = x1[i], x2[i], y1[j], y2[j]
+
+    return slices.reshape(nx*ny, 4)
+
+def image_normal(image: np.ndarray, resize: int)->np.ndarray:
+    image = np.expand_dims(image, 0)
+    
+    # Normalize
+    image = image / 255.0
+    image = tf.image.resize(image, [resize, resize])
+            
+    return image
+
+def image_tta(image: np.ndarray, resize: int)->tuple:
+    # Normalize
+    image = image / 255.0
+
+    # Resize
+    image = tf.image.resize(image, [resize, resize])
+
+    # TTA
+    image_lr = np.fliplr(image)
+    image_ud = np.flipud(image)
+    image_tr = np.transpose(image, (1, 0, 2))
+    
+    return np.expand_dims(image, 0), np.expand_dims(image_lr, 0), np.expand_dims(image_ud, 0), np.expand_dims(image_tr, 0) 
+
+def image_tta_batch(image: np.ndarray, resize: int)->np.ndarray:
+    # Normalize
+    image = image / 255.0
+
+    # Resize
+    image = tf.image.resize(image, [resize, resize])
+
+    # TTA
+    image_lr = np.fliplr(image)
+    image_ud = np.flipud(image)
+    image_tr = np.transpose(image, (1, 0, 2))    
+    image_stack = np.stack((image, image_lr, image_ud, image_tr))
+
+    return image_stack
+
+def get_prediction(image: np.ndarray, resize: int, fold_models: list, use_batch: bool, use_tta: bool)->np.ndarray:
+    # Placeholder
+    pred = None
+        
+    # Process Image and create Predictions .. works for single model or list of models
+    if not use_tta: # Just use plain input image
+        # Process Image
+        image = image_normal(image, resize)
+        
+        # Create Predictions
+        for fold_model in fold_models:
+            if pred is None:
+                pred = np.squeeze(fold_model.predict(image))
+            else:
+                pred += np.squeeze(fold_model.predict(image))
+                    
+    elif use_batch and use_tta:
+        # Process Image
+        image_batch = image_tta_batch(image, resize)
+
+        # Create Predictions
+        for fold_model in fold_models:
+            if pred is None:
+                pred_tta = np.squeeze(fold_model.predict(image_batch))
+                pred = (pred_tta[0,] + np.fliplr(pred_tta[1,]) + np.flipud(pred_tta[2,]) + np.transpose(pred_tta[3,])) / 4 
+            else:
+                pred_tta = np.squeeze(fold_model.predict(image_batch))
+                pred += (pred_tta[0,] + np.fliplr(pred_tta[1,]) + np.flipud(pred_tta[2,]) + np.transpose(pred_tta[3,])) / 4 
+    
+    elif not use_batch and use_tta:
+        # Process Image
+        image, image_lr, image_ud, image_tr = image_tta(image, resize)
+        
+        # Create Predictions ... because of larger backbone models and patch sizes 2048 * 2048 and up 
+        # .. it was needed to predict on single images instead of a batch of images to resolve memory issues.  
+        for fold_model in fold_models:
+            if pred is None:
+                pred1 = np.squeeze(fold_model.predict(image))
+                pred2 = np.squeeze(fold_model.predict(image_lr))
+                pred3 = np.squeeze(fold_model.predict(image_ud))
+                pred4 = np.squeeze(fold_model.predict(image_tr))
+                pred = (pred1 + np.fliplr(pred2) + np.flipud(pred3) + np.transpose(pred4)) / 4 
+            else:
+                pred1 = np.squeeze(fold_model.predict(image))
+                pred2 = np.squeeze(fold_model.predict(image_lr))
+                pred3 = np.squeeze(fold_model.predict(image_ud))
+                pred4 = np.squeeze(fold_model.predict(image_tr))
+                pred += (pred1 + np.fliplr(pred2) + np.flipud(pred3) + np.transpose(pred4)) / 4
+            
+    pred = pred / len(fold_models)
+    
+    return pred
+
+def get_models(model_weights_list: list)->list:
+    fold_models = []
+    
+    # Memory Cleanup
+    tf.keras.backend.clear_session()
+    gc.collect()
+    
+    # Load Models
+    for fold_model_path in model_weights_list:
+        fold_models.append(tf.keras.models.load_model(fold_model_path, compile = False))
+
+    return fold_models
+
+def crf_softmax(probs: np.ndarray, size: int, window: int)->np.ndarray:    
+    # The first dimension needs to be equal to the number of classes.
+    # Let's have one "foreground" and one "background" class.
+    probs = np.tile(probs[np.newaxis,:,:],(2,1,1))
+    probs[1,:,:] = 1 - probs[0,:,:]
+    
+    # Inference 
+    U = unary_from_softmax(probs)
+    d = dcrf.DenseCRF2D(size, size, 2)
+    d.setUnaryEnergy(U)
+    d.addPairwiseGaussian(sxy = (3, 3), compat = 3, kernel = dcrf.DIAG_KERNEL, normalization = dcrf.NORMALIZE_SYMMETRIC)
+    
+    # Run inference for X iterations
+    Q_unary = d.inference(5)
+
+    # The Q is now the approximate posterior, we can get a MAP estimate using argmax.
+    map = np.argmin(Q_unary, axis = 0)
+
+    # DenseCRF flattens everything ... so reshape it back
+    map = map.reshape((size, size))
+
+    # Resize back to original patch
+    crf_pred = cv2.resize(map.astype(np.uint8), (window, window), interpolation = cv2.INTER_AREA)
+    pred = (crf_pred > 0.5).astype(np.uint8)
+    
+    return pred 
