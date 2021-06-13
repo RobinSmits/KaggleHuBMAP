@@ -28,16 +28,19 @@ except ValueError:
 
 # Set Constants
 EPOCHS = 40
-BACKBONE = 'efficientnetb0' # B4 
-SEGMENTATION_FRAMEWORK = 'unet' # Choice: 'fpn' OR 'linknet' OR 'unet'
+BACKBONE = 'efficientnetb0'  
+SEGMENTATION_FRAMEWORK = 'unet'                                         # Choice: 'fpn' OR 'linknet' OR 'unet'
 FOLDS = 5
 SIZE = 1024
 RESIZE = 256 
 LR = 0.0001 
 FOLD_EARLY_STOP = 5
-Q = 500 # Number of Quantiles for Histogram Bins based stratification
+Q = 500                                                                 # Number of Quantiles for Histogram Bins based stratification
 SEED = 5363
 METRIC_KEYS = ['loss', 'dice', 'accuracy']
+MODEL_PATH = '/models/'                                                 # Path where to export model checkpoints and plots       
+MODEL_NAME = f'{SEGMENTATION_FRAMEWORK}_{BACKBONE}_{SIZE}_{RESIZE}'     # Default Model Name...modify if necessary.
+TRAIN_STAGE2 = True
 
 #### Constants that can be used on Kaggle Notebooks TPU v3 or Google Colab Pro TPU v2 ##################
 #BACKBONE = 'efficientnetb4' 
@@ -58,37 +61,47 @@ print(f'Batch Size: {BATCH_SIZE}')
 # Seeds
 set_seeds(SEED)
 
+##### Stage 1 ###########################################################################################################
 # Get Regular Images and Path
-#DATA_PATH = KaggleDatasets().get_gcs_path(f'khmtrainphase1')
-DATA_PATH = 'C:/KaggleHuBMAP/tfrecords'
-MODEL_PATH = '/kaggle/working/'
-MODEL_NAME = f'{SEGMENTATION_FRAMEWORK}_{BACKBONE}_{SIZE}_{RESIZE}'
-
-# Get all Kaggle official training files
-ALL_TRAINING_FILENAMES = tf.io.gfile.glob(DATA_PATH + '/train/*/*.tfrec')
-print(ALL_TRAINING_FILENAMES[:5])
-print(len(ALL_TRAINING_FILENAMES))
-
-# Get external training files
-ALL_TRAINING_FILENAMES_EXT1 = tf.io.gfile.glob(DATA_PATH + '/ext1/*.tfrec')
-print(ALL_TRAINING_FILENAMES_EXT1[:5])
-print(len(ALL_TRAINING_FILENAMES_EXT1))
+DATA_PATH_STAGE1 = 'C:/KaggleHuBMAP/train_files_stage1/'
 
 # Read CSV files for mask density info
-df = pd.concat([pd.read_csv(f) for f in tf.io.gfile.glob(DATA_PATH + '/train/*.csv')], ignore_index = True)
-df['file_name'] = DATA_PATH + '/train/' + df['relative_path']
-df_ext = pd.concat([pd.read_csv(f) for f in tf.io.gfile.glob(DATA_PATH + '/ext1/*.csv')], ignore_index = True)
-df_ext['file_name'] = DATA_PATH + '/ext1/' + df_ext['relative_path']
+df = pd.concat([pd.read_csv(f) for f in tf.io.gfile.glob(DATA_PATH_STAGE1 + 'train/*.csv')], ignore_index = True)
+df['file_name'] = DATA_PATH_STAGE1 + 'train/' + df['relative_path']
+df_ext1 = pd.concat([pd.read_csv(f) for f in tf.io.gfile.glob(DATA_PATH_STAGE1 + 'ext1/*.csv')], ignore_index = True)
+df_ext1['file_name'] = DATA_PATH_STAGE1 + 'ext1/' + df_ext1['relative_path']
 print(f'Training files CSV shape: {df.shape}')
-print(f'External files CSV shape: {df_ext.shape}')
+print(f'External files CSV shape: {df_ext1.shape}')
 
 # Sets for Random Sampling
-ALL_TRAINING_FILENAMES_EXT1_MASK = df_ext[df_ext['mask_density'] > 0].file_name.to_list()
-ALL_TRAINING_FILENAMES_EXT1_NOMASK = df_ext[df_ext['mask_density'] == 0].file_name.to_list()
-print(f'Extra2 with Mask: {len(ALL_TRAINING_FILENAMES_EXT1_MASK)}')
-print(f'Extra2 with No Mask: {len(ALL_TRAINING_FILENAMES_EXT1_NOMASK)}')
+all_training_filenames_ext1_mask = df_ext1[df_ext1['mask_density'] > 0].file_name.to_list()
+all_training_filenames_ext1_nomask = df_ext1[df_ext1['mask_density'] == 0].file_name.to_list()
+print(f'Extra1 with Mask: {len(all_training_filenames_ext1_mask)}')
+print(f'Extra1 with No Mask: {len(all_training_filenames_ext1_nomask)}')
 
-# Assign Labels based on Mask or No Mask
+##### Stage 2 ###########################################################################################################
+if TRAIN_STAGE2:
+    DATA_PATH_STAGE2 = 'C:/KaggleHuBMAP/train_files_stage2/'
+
+    # Read CSV files from Pseudo Labelled Public Test data and External 2 dataset
+    df_test = pd.concat([pd.read_csv(f) for f in tf.io.gfile.glob(DATA_PATH_STAGE2 + 'test/*.csv')], ignore_index = True)
+    df_test['file_name'] = DATA_PATH_STAGE2 + 'test/' + df_test['relative_path']
+    df_ext2 = pd.concat([pd.read_csv(f) for f in tf.io.gfile.glob(DATA_PATH_STAGE2 + 'ext2/*.csv')], ignore_index = True)
+    df_ext2['file_name'] = DATA_PATH_STAGE2 + 'ext2/' + df_ext2['relative_path']
+    print(f'Pseudo Labelled Test files CSV shape: {df_test.shape}')
+    print(f'Pseudo Labelled Extra2 files CSV shape: {df_ext2.shape}')
+
+    # Subsets for Random Sampling
+    all_training_filenames_test_mask = df_test[df_test['mask_density'] > 0].file_name.to_list()
+    all_training_filenames_test_nomask = df_test[df_test['mask_density'] == 0].file_name.to_list()
+    all_training_filenames_ext2_mask = df_ext2[df_ext2['mask_density'] > 0].file_name.to_list()
+    all_training_filenames_ext2_nomask = df_ext2[df_ext2['mask_density'] == 0].file_name.to_list()
+    print(f'Pseudo Labelled Test with Mask: {len(all_training_filenames_test_mask)}')
+    print(f'Pseudo Labelled Test with No Mask: {len(all_training_filenames_test_nomask)}')
+    print(f'Pseudo Labelled Extra2 with Mask: {len(all_training_filenames_ext2_mask)}')
+    print(f'Pseudo Labelled Extra2 with No Mask: {len(all_training_filenames_ext2_nomask)}')
+
+# Assign Labels based on Mask or No Mask. These labels are use for Stratified Validation. We only use official Train Data for validation.
 df['mask_density_label'] = 0
 def assign_label(i):
     if i == 0:
@@ -122,17 +135,17 @@ for fold, (tr_idx, val_idx) in enumerate(fold.split(df, df.bin_label.values)):
     
     # CREATE TRAIN AND VALIDATION SUBSETS
     df_train = df.loc[tr_idx]
-    VALIDATION_FILENAMES = df.file_name[val_idx]
+    validation_filenames = df.file_name[val_idx]
 
     # Subsets for Random Sampling
-    ALL_TRAINING_FILENAMES_MASK = df_train[df_train['mask_density'] > 0].file_name.to_list()
-    ALL_TRAINING_FILENAMES_NOMASK = df_train[df_train['mask_density'] == 0].file_name.to_list()
+    all_training_filenames_mask = df_train[df_train['mask_density'] > 0].file_name.to_list()
+    all_training_filenames_nomask = df_train[df_train['mask_density'] == 0].file_name.to_list()
 
     # Finalize Validation
-    VALIDATION_STEPS_PER_EPOCH = len(VALIDATION_FILENAMES) // BATCH_SIZE
-    print(f'Valid Filenames: {VALIDATION_FILENAMES[:5]}')
+    VALIDATION_STEPS_PER_EPOCH = len(validation_filenames) // BATCH_SIZE
+    print(f'Valid Filenames: {validation_filenames[:5]}')
     print(f'Valid Steps: {VALIDATION_STEPS_PER_EPOCH}')
-    validation_dataset = get_validation_dataset(VALIDATION_FILENAMES, BATCH_SIZE, SIZE, RESIZE, SEED, ordered = True, augment = False)
+    validation_dataset = get_validation_dataset(validation_filenames, BATCH_SIZE, SIZE, RESIZE, SEED, ordered = True, augment = False)
     
     # Cleanup
     tf.keras.backend.clear_session()    
@@ -152,21 +165,27 @@ for fold, (tr_idx, val_idx) in enumerate(fold.split(df, df.bin_label.values)):
         print(f'\n======= Training Model Fold {fold} - Epoch: {epoch}')  
          
         # Get Ramdom Samples
-        EXTMask = random_sampler(ALL_TRAINING_FILENAMES_EXT1_MASK, 0.60)
-        EXTNoMask = random_sampler(ALL_TRAINING_FILENAMES_EXT1_NOMASK, 0.25)
-        TrainMask = random_sampler(ALL_TRAINING_FILENAMES_MASK, 0.60)
-        TrainNoMask = random_sampler(ALL_TRAINING_FILENAMES_NOMASK, 0.25)
-
+        ext1_mask = random_sampler(all_training_filenames_ext1_mask, 0.60)
+        ext1_nomask = random_sampler(all_training_filenames_ext1_nomask, 0.25)
+        train_mask = random_sampler(all_training_filenames_mask, 0.60)
+        train_nomask = random_sampler(all_training_filenames_nomask, 0.25)
+        if TRAIN_STAGE2:
+            test_mask = random_sampler(all_training_filenames_test_mask, 0.50)
+            test_nomask = random_sampler(all_training_filenames_test_nomask, 0.10)
+            ext2_mask = random_sampler(all_training_filenames_ext2_mask, 0.60)
+            ext2_nomask = random_sampler(all_training_filenames_ext2_nomask, 0.10)
+        
         # Add External Data to Training Filenames....Leave out of Validation Part...Only official training set images are used for that.
-        TOTAL_TRAINING_FILENAMES = TrainMask + TrainNoMask + EXTMask + EXTNoMask 
-        random.shuffle(TOTAL_TRAINING_FILENAMES)
-        print(TOTAL_TRAINING_FILENAMES[:10])
+        total_training_filenames = train_mask + train_nomask + ext1_mask + ext1_nomask 
+        if TRAIN_STAGE2: total_training_filenames += test_mask + test_nomask + ext2_mask + ext2_nomask 
+        random.shuffle(total_training_filenames)
+        print(total_training_filenames[:10])
 
         # Set Steps
-        STEPS_PER_EPOCH = len(TOTAL_TRAINING_FILENAMES) // BATCH_SIZE
+        STEPS_PER_EPOCH = len(total_training_filenames) // BATCH_SIZE
         
         # Create Datasets
-        training_dataset = get_training_dataset(TOTAL_TRAINING_FILENAMES, BATCH_SIZE, SIZE, RESIZE, SEED, ordered = False, augment = True)
+        training_dataset = get_training_dataset(total_training_filenames, BATCH_SIZE, SIZE, RESIZE, SEED, ordered = False, augment = True)
 
         # Set Learning Rate
         tf.keras.backend.set_value(model.optimizer.learning_rate, lr_scheduler(epoch, LR))
