@@ -281,19 +281,19 @@ def load_dataset(filenames, size, resize, seed, ordered = False, augment = False
     
     return dataset
 
-def get_training_dataset(training_filenames, batch_size, size, resize, seed, ordered = False, augment = False):
-    dataset = load_dataset(training_filenames, size, resize, seed, ordered = ordered, augment = augment)
-    dataset = dataset.repeat()
-    dataset = dataset.shuffle(1024, seed = seed, reshuffle_each_iteration = True)
-    dataset = dataset.batch(batch_size, drop_remainder = True)
-    dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+def get_training_dataset(training_filenames: list, batch_size: int, size: int, resize: int, seed: int, ordered = False, augment = False)->tf.data.Dataset:
+    dataset = (load_dataset(training_filenames, size, resize, seed, ordered = ordered, augment = augment)
+                            .repeat()
+                            .shuffle(1024, seed = seed, reshuffle_each_iteration = True)
+                            .batch(batch_size, drop_remainder = True)
+                            .prefetch(tf.data.experimental.AUTOTUNE))
     
     return dataset
 
-def get_validation_dataset(validation_filenames, batch_size, size, resize, seed, ordered = True, augment = False):
-    dataset = load_dataset(validation_filenames, size, resize, seed, ordered = ordered, augment = augment)
-    dataset = dataset.batch(batch_size, drop_remainder = True)
-    dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+def get_validation_dataset(validation_filenames: list, batch_size: int, size: int, resize: int, seed: int, ordered = True, augment = False)->tf.data.Dataset:
+    dataset = (load_dataset(validation_filenames, size, resize, seed, ordered = ordered, augment = augment)
+                            .batch(batch_size, drop_remainder = True)
+                            .prefetch(tf.data.experimental.AUTOTUNE))
     
     return dataset
 
@@ -334,7 +334,7 @@ def dice(output, target, axis = None, smooth = 1e-10):
     
     return dice
 
-def random_sampler(item_list, sample_percentage, debug = False):
+def random_sampler(item_list: list, sample_percentage: float, debug = False)->list:
     item_list_length = len(item_list)
     k_samples = int(item_list_length * sample_percentage)
     sampled_list = random.sample(item_list, k_samples)
@@ -348,7 +348,7 @@ def random_sampler(item_list, sample_percentage, debug = False):
     
     return sampled_list
 
-def plot_training(history, plot_file_name):
+def plot_training(history: dict, plot_file_name: str):
     plt.figure(figsize = (16, 6))
     n_e = np.arange(len(history['dice']))
 
