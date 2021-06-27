@@ -68,15 +68,17 @@ For inference the Kaggle GPU Notebooks were used.
 
 ## Results
 
+After the competition ended I was able to perform some isolated training and inference runs to see the difference between the 2 stages and the various inference options. Note that because of the randomness within the deep learning frameworks and the random sampling these results can vary between different training rounds. They are only ment to give an indication of the performance. When showing the performance of the single fold scores I use the mean of all 5 folds.
+
 Below an overview of the inference results for a 5-fold cross validation training run with the following main information:
-- Unet
+- Segmentation Framework: Unet
 - Backbone: EfficientNet B0
 - Epochs: 40
 - Batchsize: 24
 - Learning Rate (with custom scheduler): 0.0001
 - Patches 1024 resized to 256
 
-For inference a fixed threshold of 0.4 was used. Inference was on patches of 1024 pixs resized to 256 pixs.
+For inference a fixed threshold of 0.4 or DenseCRF was used. Inference was on patches of 1024 pixs resized to 256 pixs.
 
 | Inference Setup | Stage 1 Score | Stage 2 Score |
 |:---------------|----------------:|----------------:|
@@ -87,3 +89,25 @@ For inference a fixed threshold of 0.4 was used. Inference was on patches of 102
 | Ensemble (5 folds) - TTA - Fixed Threshold | 0.9316 | 0.9352 |
 | Ensemble (5 folds) - No TTA - DenseCRF | 0.9331 | 0.9360 |
 | Ensemble (5 folds) - TTA - DenseCRF | 0.9351 | 0.9384 |
+
+Below an overview of a second experiment with the inference results for a 5-fold cross validation training run with the following main information:
+- Segmentation Framework: FPN
+- Backbone: EfficientNet B4
+- Epochs: 35
+- Batchsize: 48
+- Learning Rate (with custom scheduler): 0.0002
+- Patches 1024 resized to 512
+
+For inference a fixed threshold of 0.4 or DenseCRF was used. Inference was on patches of 1024 pixs resized to 512 pixs. For the ensemble with TTA and DenseCRF only 3 folds could be used because of the Kaggle Notebook time limits.
+
+| Inference Setup | Stage 1 Score | Stage 2 Score |
+|:---------------|----------------:|----------------:|
+| Average of single models - No TTA - Fixed Threshold | 0.9335 | 0.9365 |
+| Average of single models - TTA - Fixed Threshold | 0.9361 | 0.9380 |
+| Average of single models - TTA - DenseCRF | 0.9391 | 0.9408 |
+| Ensemble (5 folds) - No TTA - Fixed Threshold | 0.9393 | 0.9400 |
+| Ensemble (5 folds) - TTA - Fixed Threshold | 0.9401 | 0.9408 |
+| Ensemble (5 folds) - No TTA - DenseCRF | 0.9424 | 0.9427 |
+| Ensemble (**3 folds) - TTA - DenseCRF | 0.9434 | 0.9433 |
+
+Looking at the results it is interresting to note that for the smaller EfficientNet B0 backbone pseudo-labelling and retraining with the additional labelled data has some positive effect but when training with an EfficientNet B4 backbone there is virtually no difference.
